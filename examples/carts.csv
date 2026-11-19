@@ -1,0 +1,23 @@
+cart_id,customer_email,customer_name,cart_total,items,status,abandoned_at,checkout_started_at
+C-101,ana@example.com,Ana,249.99,3,abandoned,2026-11-17 10:00,2026-11-17 09:45
+C-102,ben@example.com,Ben,45.00,1,abandoned,2026-11-16 09:00,
+C-103,cara@example.com,Cara,320.50,5,abandoned,2026-11-10 09:00,2026-11-10 08:30
+C-104,dan@example.com,Dan,129.00,2,abandoned,2026-10-01 09:00,
+C-105,,Eve,189.00,2,abandoned,2026-11-15 09:00,
+C-106,ana@example.com,Ana,89.99,2,abandoned,2026-11-14 09:00,2026-11-14 08:50
+C-107,frank@example.com,Frank,59.99,1,recovered,2026-11-12 09:00,
+C-108,grace@example.com,Grace,not-a-number,1,abandoned,2026-11-13 09:00,
+C-109,henry@example.com,Henry,75.00,1,abandoned,not-a-date,
+C-110,ivy@example.com,Ivy,150.00,2,abandoned,2026-11-17 09:00,2026-11-17 08:00
+C-111,jack@example.com,Jack,25.00,1,purchased,2026-11-10 09:00,
+C-112,ana@example.com,Ana,210.00,4,abandoned,2026-11-13 09:00,
+C-113,kate@example.com,Kate,99.99,1,abandoned,2026-11-17 09:00,
+C-114,leo@example.com,Leo,500.00,6,abandoned,2026-09-20 09:00,2026-09-20 08:00
+C-115,,Mia,60.00,1,abandoned,2026-11-16 09:00,
+C-116,nina@example.com,Nina,40.00,1,abandoned,2026-12-01 09:00,
+C-117,oscar@example.com,Oscar,80.00,2,weird,2026-11-15 09:00,
+C-101,ana@example.com,Ana,249.99,3,abandoned,2026-11-17 10:00,2026-11-17 09:45
+C-118,pam@example.com,Pam,30.00,1,abandoned,2026-11-15 09:00,,extra-field
+,paul@example.com,Paul,30.00,1,abandoned,2026-11-15 09:00,
+C-119,not-an-email,Quinn,120.00,2,abandoned,2026-11-15 09:00,
+C-120,rachel@example.com,Rachel,55.00,1,abandoned,2026-11-14 09:00,2026-11-14 10:00

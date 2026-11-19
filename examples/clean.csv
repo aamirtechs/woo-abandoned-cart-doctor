@@ -1,0 +1,4 @@
+cart_id,customer_email,customer_name,cart_total,items,status,abandoned_at,checkout_started_at
+C-201,ana@example.com,Ana,45.00,1,abandoned,2026-11-17 09:00,
+C-202,ben@example.com,Ben,120.00,2,recovered,2026-11-15 09:00,
+C-203,cara@example.com,Cara,25.00,1,purchased,2026-11-14 09:00,

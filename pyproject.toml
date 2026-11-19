@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "woo-abandoned-cart-doctor"
+version = "1.0.0"
+description = "Audit a WooCommerce abandoned carts CSV export for recoverable value and cart problems"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+[project.scripts]
+woo-abandoned-cart-doctor = "woo_abandoned_cart_doctor:main_entry"
+
+[tool.setuptools]
+py-modules = ["woo_abandoned_cart_doctor"]
