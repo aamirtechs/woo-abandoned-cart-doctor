@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Woo Abandoned Cart Doctor - AamirTechs</title>
+<style>
+:root{--navy:#0b1f3a;--gold:#d4a72c;--bg:#f6f8fb;--ink:#1c2733;--muted:#5b6b7c;--line:#d9e1ea}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--navy);color:#fff;padding:28px 20px;border-bottom:4px solid var(--gold)}
+header .wrap{max-width:880px;margin:0 auto}
+header h1{margin:0 0 6px;font-size:1.6rem}
+header p{margin:0;color:#c8d4e4}
+main{max-width:880px;margin:24px auto;padding:0 20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(11,31,58,.08)}
+label{display:block;font-weight:600;margin:14px 0 6px}
+.card>label:first-child{margin-top:0}
+textarea{width:100%;min-height:180px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem}
+input[type=text],input[type=number],select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:.95rem;width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:4px}
+.grid label{margin:0 0 6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+button{background:var(--navy);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:.95rem;cursor:pointer}
+button.alt{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+button.gold{background:var(--gold);color:#0b1f3a;font-weight:600}
+pre{background:#0b1f3a;color:#eef3f9;border-radius:8px;padding:16px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;min-height:60px;font-size:.85rem}
+footer{max-width:880px;margin:0 auto 32px;padding:0 20px;color:var(--muted);font-size:.9rem}
+footer a{color:var(--navy)}
+.hint{color:var(--muted);font-size:.85rem;margin-top:6px;font-weight:400}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>Woo Abandoned Cart Doctor</h1><p>A zero-dependency Python CLI that audits a WooCommerce abandoned carts CSV export for recoverable value: high-value carts with a reachable email, repeat abandoners, carts abandoned after checkout started, carts with no email at all (unrecoverable), stale carts past the recovery window, duplicate carts for one customer, and bad data such as duplicate cart ids, malformed rows, invalid amounts, and invalid or future dates. It totals the recoverable and unrecoverable value in the export, so a store owner can see which carts are worth chasing before sending a single recovery email.</p></div></header>
+<main><div class="card">
+<label for="file">Input CSV file</label>
+<input type="file" id="file" accept=".csv,text/csv">
+<label for="input">Or paste the carts CSV</label>
+<textarea id="input" spellcheck="false" placeholder="Paste a WooCommerce abandoned carts CSV export here, or load the sample."></textarea>
+<label>Options</label>
+<div class="grid">
+<div><label for="opt-minvalue">Min value <span class="hint">(--min-value)</span></label><input type="text" id="opt-minvalue" value="100.00"></div>
+<div><label for="opt-stale">Stale days <span class="hint">(--stale-days)</span></label><input type="number" id="opt-stale" step="1" value="30"></div>
+<div><label for="opt-asof">As of <span class="hint">(--as-of)</span></label><input type="text" id="opt-asof" value="2026-11-18"></div>
+</div>
+<div class="row"><button class="gold" id="run" type="button">Run check</button><button class="alt" id="sample" type="button">Load sample</button><button class="alt" id="sample-clean" type="button">Load clean sample</button><button class="alt" id="sample-warnings" type="button">Load warnings sample</button><button class="alt" id="download" type="button">Download report</button></div>
+<label for="out">Report</label>
+<pre id="out">Your report will appear here.</pre>
+</div></main>
+<footer>
+<p>Built by AamirTechs. <a href="https://aamirtechs.github.io/">All tools</a> | <a href="https://github.com/aamirtechs/woo-abandoned-cart-doctor">Source</a></p>
+<p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+<script id="core">
+// Pure logic port of woo_abandoned_cart_doctor.py. No DOM access in this block.
+// Timestamps are {t: epoch microseconds as an exact integer double,
+// off: UTC offset in minutes}; t drives comparisons, off drives the
+// wall-clock text Python strftime would print. Money is an exact
+// decimal {k, neg, coef, exp} mirroring Python Decimal: k 0 is a
+// finite value (neg ? -1 : 1) * coef * 10^exp with coef a BigInt,
+// k 1 is infinity, k 2 is NaN.
+function pyRepr(v) {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "string") {
+    var esc = v.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+    if (v.indexOf("'") >= 0 && v.indexOf('"') < 0) return '"' + esc + '"';
+    return "'" + esc.replace(/'/g, "\\'") + "'";
+  }
+  return String(v);
+}
+function fmtF(x, digits) {
+  // Exact Python "%.<digits>f" formatting: round half even on the
+  // exact binary value of the double.
+  if (!isFinite(x)) return String(x);
+  var neg = x < 0 || (x === 0 && 1 / x < 0);
+  var dv = new DataView(new ArrayBuffer(8));
+  dv.setFloat64(0, Math.abs(x));
+  var bits = dv.getBigUint64(0);
+  var exp = Number((bits >> 52n) & 0x7ffn);
+  var frac = bits & ((1n << 52n) - 1n);
+  var mant, e2;
+  if (exp === 0) { mant = frac; e2 = -1074; }
+  else { mant = frac | (1n << 52n); e2 = exp - 1075; }
+  var num = mant * (5n ** BigInt(digits));
+  var e = e2 + digits;
+  var q;
+  if (e >= 0) q = num << BigInt(e);
+  else {
+    var den = 1n << BigInt(-e);
+    q = num / den;
+    var r = num % den;
+    if (r * 2n > den || (r * 2n === den && (q & 1n) === 1n)) q += 1n;
+  }
+  var s = q.toString();
+  if (digits > 0) {
+    while (s.length <= digits) s = "0" + s;
+    s = s.slice(0, s.length - digits) + "." + s.slice(s.length - digits);
+  }
+  return (neg ? "-" : "") + s;
+}
+function daysInMonth(y, mo) {
+  return [31, (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28,
+    31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+}
+function validParts(y, mo, d, hh, mi, ss) {
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= daysInMonth(y, mo) &&
+    hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59 && ss >= 0 && ss <= 59;
+}
+function makeTs(y, mo, d, hh, mi, ss, micro, off) {
+  if (!validParts(y, mo, d, hh, mi, ss)) return null;
+  var ms = Date.UTC(y, mo - 1, d, hh, mi, ss) - off * 60000;
+  return { t: ms * 1000 + micro, off: off };
+}
+function parseTimestamp(text) {
+  // Mirrors Python: datetime.fromisoformat first, then the
+  // TIMESTAMP_FORMATS strptime list in order. Naive means UTC.
+  if (text === null || text === undefined) return null;
+  text = String(text).trim();
+  if (!text) return null;
+  var cand = text;
+  if (/[Zz]$/.test(cand)) cand = cand.slice(0, -1) + "+00:00";
+  var m = /^(\d{4})-(\d{2})-(\d{2})(?:[^\d](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([+-]\d{2}:?\d{2}(?::?\d{2})?)?)?$/.exec(cand);
+  if (m) {
+    var off = 0, ok = true;
+    if (m[8]) {
+      var om = /^([+-])(\d{2}):?(\d{2})(?::?(\d{2}))?$/.exec(m[8]);
+      var oh = +om[2], omin = +om[3], osec = om[4] ? +om[4] : 0;
+      if (oh > 23 || omin > 59 || osec > 59) ok = false;
+      off = (oh * 60 + omin) * (om[1] === "-" ? -1 : 1);
+    }
+    if (ok) {
+      var micro = m[7] ? parseInt((m[7] + "000000").slice(0, 6), 10) : 0;
+      var ts = makeTs(+m[1], +m[2], +m[3], m[4] ? +m[4] : 0,
+        m[5] ? +m[5] : 0, m[6] ? +m[6] : 0, micro, off);
+      if (ts) return ts;
+    }
+  }
+  var attempts = [
+    [/^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2})$/, "ymd"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, "dmy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, "mdy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, "dmy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, "mdy"]
+  ];
+  for (var i = 0; i < attempts.length; i++) {
+    var mm = attempts[i][0].exec(cand);
+    if (!mm) continue;
+    var kind = attempts[i][1], yy, mo2, dd, h2 = 0, mi2 = 0;
+    if (kind === "ymd") { yy = +mm[1]; mo2 = +mm[2]; dd = +mm[3]; h2 = mm[4] ? +mm[4] : 0; mi2 = mm[5] ? +mm[5] : 0; }
+    else if (kind === "dmy") { dd = +mm[1]; mo2 = +mm[2]; yy = +mm[3]; h2 = mm[4] ? +mm[4] : 0; mi2 = mm[5] ? +mm[5] : 0; }
+    else { mo2 = +mm[1]; dd = +mm[2]; yy = +mm[3]; h2 = mm[4] ? +mm[4] : 0; mi2 = mm[5] ? +mm[5] : 0; }
+    var ss2 = (kind === "ymd" && mm[6]) ? +mm[6] : 0;
+    var ts2 = makeTs(yy, mo2, dd, h2, mi2, ss2, 0, 0);
+    if (ts2) return ts2;
+  }
+  return null;
+}
+function p2(n) { return (n < 10 ? "0" : "") + n; }
+function fmtDT(ts) {
+  var d = new Date(Math.floor(ts.t / 1000) + ts.off * 60000);
+  return d.getUTCFullYear() + "-" + p2(d.getUTCMonth() + 1) + "-" + p2(d.getUTCDate()) +
+    " " + p2(d.getUTCHours()) + ":" + p2(d.getUTCMinutes());
+}
+function parseCsvRows(text) {
+  // Mirrors Python csv.reader with default dialect (strict off).
+  text = String(text).replace(/^\uFEFF/, "");
+  var rows = [], row = [], field = "", state = 0, i, ch;
+  function endField() { row.push(field); field = ""; }
+  function endRow() { endField(); rows.push(row); row = []; state = 0; }
+  for (i = 0; i < text.length; i++) {
+    ch = text[i];
+    if (state === 2) {
+      if (ch === '"') state = 3;
+      else field += ch;
+    } else if (state === 3) {
+      if (ch === '"') { field += '"'; state = 2; }
+      else if (ch === ",") { endField(); state = 0; }
+      else if (ch === "\n") endRow();
+      else if (ch === "\r") { if (text[i + 1] === "\n") i++; endRow(); }
+      else { field += ch; state = 1; }
+    } else if (state === 0) {
+      if (ch === '"') state = 2;
+      else if (ch === ",") endField();
+      else if (ch === "\n") endRow();
+      else if (ch === "\r") { if (text[i + 1] === "\n") i++; endRow(); }
+      else { field += ch; state = 1; }
+    } else {
+      if (ch === ",") { endField(); state = 0; }
+      else if (ch === "\n") endRow();
+      else if (ch === "\r") { if (text[i + 1] === "\n") i++; endRow(); }
+      else field += ch;
+    }
+  }
+  if (state !== 0 || field !== "" || row.length) { endField(); rows.push(row); }
+  return rows;
+}
+function findColumn(header, names) {
+  for (var i = 0; i < names.length; i++) {
+    if (header.indexOf(names[i]) >= 0) return names[i];
+  }
+  return null;
+}
+function decFinite(neg, coef, exp) { return { k: 0, neg: neg, coef: coef, exp: exp }; }
+function decParse(text) {
+  // Mirrors Python Decimal(str): returns null where Python raises
+  // InvalidOperation. Accepts signs, underscores between digits,
+  // a fractional part, an exponent, and the Infinity and NaN words.
+  if (text === null || text === undefined) return null;
+  var s = String(text).trim();
+  if (!s) return null;
+  var low = s.toLowerCase();
+  if (low === "inf" || low === "+inf" || low === "infinity" || low === "+infinity") return { k: 1, neg: false };
+  if (low === "-inf" || low === "-infinity") return { k: 1, neg: true };
+  if (low === "nan" || low === "+nan" || low === "snan" || low === "+snan") return { k: 2, neg: false };
+  if (low === "-nan" || low === "-snan") return { k: 2, neg: true };
+  var m = /^([+-]?)(?:(\d(?:_?\d)*)(?:\.(\d(?:_?\d)*)?)?|\.(\d(?:_?\d)*))(?:[eE]([+-]?\d(?:_?\d)*))?$/.exec(s);
+  if (!m) return null;
+  var intDigits, fracDigits;
+  if (m[2] !== undefined) {
+    intDigits = m[2].replace(/_/g, "");
+    fracDigits = m[3] ? m[3].replace(/_/g, "") : "";
+  } else {
+    intDigits = "";
+    fracDigits = m[4].replace(/_/g, "");
+  }
+  var coef = BigInt((intDigits + fracDigits) || "0");
+  var exp = (m[5] ? parseInt(m[5].replace(/_/g, ""), 10) : 0) - fracDigits.length;
+  return decFinite(m[1] === "-", coef, exp);
+}
+function decSign(d) {
+  if (d.k === 2) return 0;
+  if (d.k === 1) return d.neg ? -1 : 1;
+  if (d.coef === 0n) return 0;
+  return d.neg ? -1 : 1;
+}
+function decDigits(d) { return d.coef.toString().length; }
+function decCmp(a, b) {
+  // Returns -1, 0 or 1, or null when either side is NaN (Python
+  // raises InvalidOperation there; callers treat it as no match).
+  if (a.k === 2 || b.k === 2) return null;
+  if (a.k === 1 || b.k === 1) {
+    if (a.k === 1 && b.k === 1) return a.neg === b.neg ? 0 : (a.neg ? -1 : 1);
+    if (a.k === 1) return a.neg ? -1 : 1;
+    return b.neg ? 1 : -1;
+  }
+  var sa = decSign(a), sb = decSign(b);
+  if (sa !== sb) return sa < sb ? -1 : 1;
+  if (sa === 0) return 0;
+  var adjA = a.exp + decDigits(a), adjB = b.exp + decDigits(b), c;
+  if (adjA !== adjB) c = adjA < adjB ? -1 : 1;
+  else {
+    var e = Math.min(a.exp, b.exp);
+    var ca = a.coef * (10n ** BigInt(a.exp - e));
+    var cb = b.coef * (10n ** BigInt(b.exp - e));
+    c = ca < cb ? -1 : (ca > cb ? 1 : 0);
+  }
+  return sa === 1 ? c : -c;
+}
+function decGe(a, b) { var c = decCmp(a, b); return c !== null && c >= 0; }
+function decAdd(a, b) {
+  if (a.k === 2 || b.k === 2) return { k: 2, neg: false };
+  if (a.k === 1 || b.k === 1) {
+    if (a.k === 1 && b.k === 1) return a.neg === b.neg ? a : { k: 2, neg: false };
+    return a.k === 1 ? a : b;
+  }
+  var adjA = a.exp + decDigits(a), adjB = b.exp + decDigits(b);
+  if (Math.abs(a.exp - b.exp) > 60 && adjA !== adjB) {
+    // Far past Python's 28 digit context precision the smaller
+    // operand cannot change the larger one; keep the dominant one.
+    return adjA > adjB ? a : b;
+  }
+  var e = Math.min(a.exp, b.exp);
+  var ca = a.coef * (10n ** BigInt(a.exp - e)) * (a.neg ? -1n : 1n);
+  var cb = b.coef * (10n ** BigInt(b.exp - e)) * (b.neg ? -1n : 1n);
+  var sum = ca + cb;
+  if (sum === 0n) return decFinite(a.neg && b.neg, 0n, e);
+  return decFinite(sum < 0n, sum < 0n ? -sum : sum, e);
+}
+function decStr(d) {
+  // Mirrors Python str(Decimal).
+  if (d.k === 2) return d.neg ? "-NaN" : "NaN";
+  if (d.k === 1) return d.neg ? "-Infinity" : "Infinity";
+  var digits = d.coef.toString();
+  var sign = d.neg ? "-" : "";
+  var adj = d.exp + digits.length - 1;
+  if (d.exp <= 0 && adj >= -6) {
+    if (d.exp === 0) return sign + digits;
+    var point = digits.length + d.exp;
+    if (point > 0) return sign + digits.slice(0, point) + "." + digits.slice(point);
+    return sign + "0." + "0".repeat(-point) + digits;
+  }
+  var mant = digits.length === 1 ? digits : digits[0] + "." + digits.slice(1);
+  return sign + mant + "E" + (adj >= 0 ? "+" : "-") + Math.abs(adj);
+}
+function decFmt2(d) {
+  // Mirrors Python format(decimal, ".2f"): round half even on the
+  // exact decimal value.
+  if (d.k === 2) return d.neg ? "-NaN" : "NaN";
+  if (d.k === 1) return d.neg ? "-Infinity" : "Infinity";
+  var shift = d.exp + 2, scaled;
+  if (shift >= 0) scaled = d.coef * (10n ** BigInt(shift));
+  else {
+    var div = 10n ** BigInt(-shift);
+    var q = d.coef / div, r = d.coef % div;
+    if (r * 2n > div || (r * 2n === div && (q & 1n) === 1n)) q += 1n;
+    scaled = q;
+  }
+  var digits = scaled.toString();
+  while (digits.length < 3) digits = "0" + digits;
+  return (d.neg ? "-" : "") + digits.slice(0, digits.length - 2) + "." + digits.slice(digits.length - 2);
+}
+function parseAmount(text) {
+  if (text === null || text === undefined) return null;
+  text = String(text).trim();
+  if (!text) return null;
+  var cleaned = text.replace(/\$/g, "").replace(/,/g, "").trim();
+  return decParse(cleaned);
+}
+function isValidEmail(email) {
+  if (!email) return false;
+  if (email.split("@").length - 1 !== 1) return false;
+  var parts = email.split("@");
+  var local = parts[0], domain = parts[1];
+  if (!local || !domain) return false;
+  if (domain.indexOf(".") < 0) return false;
+  if (domain.charAt(0) === "." || domain.charAt(domain.length - 1) === ".") return false;
+  if (email.indexOf(" ") >= 0) return false;
+  return true;
+}
+function F(cart, rule, severity, message) {
+  return { cart: cart, rule: rule, severity: severity, message: message };
+}
+function findingStr(f) {
+  return f.severity.toUpperCase() + " [" + f.rule + "] " + f.cart + ": " + f.message;
+}
+var KNOWN_STATUSES = { "abandoned": 1, "recovered": 1, "purchased": 1, "active": 1 };
+var DEFAULT_REPEAT_COUNT = 3;
+function parseCarts(text, asOf) {
+  var rows = parseCsvRows(text || "");
+  if (!rows.length) throw new Error("input is empty, no header row found");
+  var header = rows[0].map(function (s) { return String(s).trim(); });
+  var idCol = findColumn(header, ["cart_id", "id", "order_id"]);
+  if (idCol === null) throw new Error("input has no cart_id or id column (header is: " + header.join(", ") + ")");
+  var emailCol = findColumn(header, ["customer_email", "email", "billing_email"]);
+  var totalCol = findColumn(header, ["cart_total", "total", "amount", "order_total"]);
+  if (totalCol === null) throw new Error("input has no cart_total or total column (header is: " + header.join(", ") + ")");
+  var nameCol = findColumn(header, ["customer_name", "name", "billing_name"]);
+  var itemsCol = findColumn(header, ["items", "items_count", "item_count", "line_items"]);
+  var statusCol = findColumn(header, ["status", "cart_status"]);
+  var abandonedCol = findColumn(header, ["abandoned_at", "date_abandoned", "abandoned", "created_at"]);
+  if (abandonedCol === null) throw new Error("input has no abandoned_at column (header is: " + header.join(", ") + ")");
+  var checkoutCol = findColumn(header, ["checkout_started_at", "checkout_started", "checkout_at"]);
+  var findings = [], carts = [], seen = Object.create(null);
+  for (var i = 1; i < rows.length; i++) {
+    var row = rows[i], lineNumber = i + 1;
+    if (!row.length || row.every(function (c) { return !String(c).trim(); })) continue;
+    if (row.length !== header.length) {
+      findings.push(F("row " + lineNumber, "malformed-row", "error",
+        "row has " + row.length + " fields but the header has " + header.length + ", so the row was skipped"));
+      continue;
+    }
+    var cells = Object.create(null);
+    for (var j = 0; j < header.length; j++) cells[header[j]] = String(row[j]).trim();
+    var cartId = cells[idCol];
+    if (!cartId) {
+      findings.push(F("row " + lineNumber, "missing-cart-id", "error",
+        "row has no cart id, so the cart cannot be matched to a recovery email"));
+      cartId = "row " + lineNumber;
+    }
+    if (Object.prototype.hasOwnProperty.call(seen, cartId)) {
+      findings.push(F(cartId, "duplicate-cart-id", "error", "cart id appears more than once in the export"));
+    } else seen[cartId] = 1;
+    var email = emailCol ? cells[emailCol] : "";
+    var totalRaw = cells[totalCol];
+    var total = parseAmount(totalRaw);
+    if (totalRaw && total === null) {
+      findings.push(F(cartId, "invalid-amount", "error",
+        "cart_total " + pyRepr(totalRaw) + " is not a readable amount"));
+    }
+    var abandonedRaw = cells[abandonedCol];
+    var abandonedAt = null;
+    if (abandonedRaw) {
+      abandonedAt = parseTimestamp(abandonedRaw);
+      if (abandonedAt === null) {
+        findings.push(F(cartId, "invalid-timestamp", "error",
+          "abandoned_at " + pyRepr(abandonedRaw) + " is not a readable date"));
+      }
+    }
+    var checkoutAt = null;
+    if (checkoutCol) {
+      var checkoutRaw = cells[checkoutCol];
+      if (checkoutRaw) {
+        checkoutAt = parseTimestamp(checkoutRaw);
+        if (checkoutAt === null) {
+          findings.push(F(cartId, "invalid-timestamp", "error",
+            "checkout_started_at " + pyRepr(checkoutRaw) + " is not a readable date"));
+        }
+      }
+    }
+    if (abandonedAt !== null && abandonedAt.t > asOf.t) {
+      findings.push(F(cartId, "future-timestamp", "error",
+        "abandoned_at " + fmtDT(abandonedAt) + " is after the as-of date " + fmtDT(asOf)));
+    }
+    carts.push({
+      id: cartId,
+      email: email,
+      name: nameCol ? cells[nameCol] : "",
+      total: total, totalRaw: totalRaw,
+      items: itemsCol ? cells[itemsCol] : "",
+      status: statusCol ? cells[statusCol].toLowerCase() : "",
+      abandonedAt: abandonedAt, abandonedRaw: abandonedRaw,
+      checkoutAt: checkoutAt,
+      line: lineNumber
+    });
+  }
+  return { carts: carts, findings: findings };
+}
+function auditCarts(carts, asOf, minValue, staleDays) {
+  var findings = [];
+  var abandonedByEmail = Object.create(null);
+  carts.forEach(function (cart) {
+    if (cart.status === "abandoned" && cart.email) {
+      var key = cart.email.toLowerCase();
+      abandonedByEmail[key] = (abandonedByEmail[key] || 0) + 1;
+    }
+  });
+  carts.forEach(function (cart) {
+    var cartId = cart.id, status = cart.status, email = cart.email;
+    var total = cart.total, abandonedAt = cart.abandonedAt, checkoutAt = cart.checkoutAt;
+    if (status && !Object.prototype.hasOwnProperty.call(KNOWN_STATUSES, status)) {
+      findings.push(F(cartId, "invalid-status", "error",
+        "status " + pyRepr(status) + " is not a known cart status"));
+    }
+    if (status === "abandoned") {
+      if (!email) {
+        findings.push(F(cartId, "no-email", "error",
+          "cart has no customer email, so it cannot be recovered by email"));
+      } else if (!isValidEmail(email)) {
+        findings.push(F(cartId, "invalid-email", "error",
+          "customer email " + pyRepr(email) + " is not a reachable email address"));
+      }
+      if (abandonedAt !== null) {
+        var ageDays = ((asOf.t - abandonedAt.t) / 1000000) / 86400;
+        if (ageDays > staleDays) {
+          findings.push(F(cartId, "stale-cart", "warning",
+            "cart was abandoned " + fmtF(ageDays, 1) + " days ago, past the " +
+            staleDays + " day recovery window, so recovery emails are unlikely to convert"));
+        }
+      }
+      if (checkoutAt !== null) {
+        if (abandonedAt !== null && checkoutAt.t > abandonedAt.t) {
+          findings.push(F(cartId, "checkout-after-abandoned", "error",
+            "checkout_started_at " + fmtDT(checkoutAt) + " is after abandoned_at " +
+            fmtDT(abandonedAt) + ", so the dates cannot both be right"));
+        } else {
+          findings.push(F(cartId, "checkout-started", "warning",
+            "cart was abandoned after checkout started, so the customer was close to buying"));
+        }
+      }
+      if (email && isValidEmail(email) && total !== null && decGe(total, minValue)) {
+        findings.push(F(cartId, "high-value-recoverable", "warning",
+          "cart is worth $" + decFmt2(total) + " with a reachable email, so it is worth a recovery email"));
+      }
+      if (email) {
+        var count = abandonedByEmail[email.toLowerCase()] || 0;
+        if (count >= 2) {
+          findings.push(F(cartId, "duplicate-customer-cart", "warning",
+            "customer " + email + " has " + count + " abandoned carts in this export, " +
+            "so an older cart may already have been superseded"));
+        }
+        if (count >= DEFAULT_REPEAT_COUNT) {
+          findings.push(F(cartId, "repeat-abandoner", "warning",
+            "customer " + email + " has abandoned " + count + " carts, so they are a " +
+            "repeat abandoner, not a one-off"));
+        }
+      }
+    }
+  });
+  return findings;
+}
+function summarizeCarts(carts, findings, minValue) {
+  var errors = findings.filter(function (f) { return f.severity === "error"; }).length;
+  var warnings = findings.length - errors;
+  var abandoned = carts.filter(function (c) { return c.status === "abandoned"; });
+  var recoverable = decParse("0.00"), unrecoverable = decParse("0.00");
+  var highValue = 0;
+  abandoned.forEach(function (cart) {
+    if (cart.total === null) return;
+    if (cart.email && isValidEmail(cart.email)) {
+      recoverable = decAdd(recoverable, cart.total);
+      if (decGe(cart.total, minValue)) highValue += 1;
+    } else {
+      unrecoverable = decAdd(unrecoverable, cart.total);
+    }
+  });
+  var emails = Object.create(null);
+  abandoned.forEach(function (cart) {
+    if (cart.email) {
+      var key = cart.email.toLowerCase();
+      emails[key] = (emails[key] || 0) + 1;
+    }
+  });
+  var repeatAbandoners = 0;
+  Object.keys(emails).forEach(function (key) {
+    if (emails[key] >= DEFAULT_REPEAT_COUNT) repeatAbandoners += 1;
+  });
+  var perStatusMap = Object.create(null);
+  carts.forEach(function (cart) {
+    var status = cart.status || "(no status)";
+    perStatusMap[status] = (perStatusMap[status] || 0) + 1;
+  });
+  var perStatus = Object.keys(perStatusMap).sort(function (a, b) {
+    return a < b ? -1 : (a > b ? 1 : 0);
+  }).map(function (status) {
+    return { status: status, carts: perStatusMap[status] };
+  });
+  return {
+    carts: carts.length, findings: findings.length, errors: errors, warnings: warnings,
+    abandoned: abandoned.length,
+    recoverableValue: decStr(recoverable), unrecoverableValue: decStr(unrecoverable),
+    highValueRecoverable: highValue, repeatAbandoners: repeatAbandoners,
+    perStatus: perStatus
+  };
+}
+function formatText(findings, summary) {
+  var lines = findings.map(findingStr);
+  lines.push("");
+  lines.push("Carts: " + summary.carts + ", findings: " + summary.findings +
+    ", errors: " + summary.errors + ", warnings: " + summary.warnings);
+  lines.push("Abandoned carts: " + summary.abandoned + ", recoverable value: $" +
+    summary.recoverableValue + ", unrecoverable value: $" + summary.unrecoverableValue);
+  lines.push("High-value recoverable carts: " + summary.highValueRecoverable +
+    ", repeat abandoners: " + summary.repeatAbandoners);
+  lines.push("");
+  lines.push("Per-status summary:");
+  summary.perStatus.forEach(function (row) {
+    lines.push(row.status + ": " + row.carts + " carts");
+  });
+  if (summary.findings === 0) { lines.push(""); lines.push("All carts clean."); }
+  return lines.join("\n") + "\n";
+}
+function optInt(v, fallback) {
+  if (v === undefined || v === null || v === "") return fallback;
+  var n = parseInt(String(v), 10);
+  return isNaN(n) ? fallback : n;
+}
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var minValueRaw = (options.minValue === undefined || options.minValue === null)
+    ? "100.00" : String(options.minValue);
+  var minValue = decParse(minValueRaw);
+  if (minValue === null) return "error: --min-value " + pyRepr(minValueRaw) + " is not a readable amount\n";
+  if (decSign(minValue) < 0) return "error: --min-value must be at least 0\n";
+  var staleDays = optInt(options.staleDays, 30);
+  if (staleDays < 0) return "error: --stale-days must be at least 0\n";
+  var asOf;
+  if (options.asOf === undefined || options.asOf === null || String(options.asOf).trim() === "") {
+    asOf = { t: Date.now() * 1000, off: 0 };
+  } else {
+    asOf = parseTimestamp(String(options.asOf));
+    if (asOf === null) return "error: --as-of " + pyRepr(String(options.asOf)) + " is not a readable date\n";
+  }
+  var parsed;
+  try { parsed = parseCarts(inputText || "", asOf); }
+  catch (e) { return "ERROR: " + e.message + "\n"; }
+  var findings = parsed.findings.concat(auditCarts(parsed.carts, asOf, minValue, staleDays));
+  var summary = summarizeCarts(parsed.carts, findings, minValue);
+  return formatText(findings, summary);
+};
+</script>
+<script>
+var SAMPLE = `cart_id,customer_email,customer_name,cart_total,items,status,abandoned_at,checkout_started_at
+C-101,ana@example.com,Ana,249.99,3,abandoned,2026-11-17 10:00,2026-11-17 09:45
+C-102,ben@example.com,Ben,45.00,1,abandoned,2026-11-16 09:00,
+C-103,cara@example.com,Cara,320.50,5,abandoned,2026-11-10 09:00,2026-11-10 08:30
+C-104,dan@example.com,Dan,129.00,2,abandoned,2026-10-01 09:00,
+C-105,,Eve,189.00,2,abandoned,2026-11-15 09:00,
+C-106,ana@example.com,Ana,89.99,2,abandoned,2026-11-14 09:00,2026-11-14 08:50
+C-107,frank@example.com,Frank,59.99,1,recovered,2026-11-12 09:00,
+C-108,grace@example.com,Grace,not-a-number,1,abandoned,2026-11-13 09:00,
+C-109,henry@example.com,Henry,75.00,1,abandoned,not-a-date,
+C-110,ivy@example.com,Ivy,150.00,2,abandoned,2026-11-17 09:00,2026-11-17 08:00
+C-111,jack@example.com,Jack,25.00,1,purchased,2026-11-10 09:00,
+C-112,ana@example.com,Ana,210.00,4,abandoned,2026-11-13 09:00,
+C-113,kate@example.com,Kate,99.99,1,abandoned,2026-11-17 09:00,
+C-114,leo@example.com,Leo,500.00,6,abandoned,2026-09-20 09:00,2026-09-20 08:00
+C-115,,Mia,60.00,1,abandoned,2026-11-16 09:00,
+C-116,nina@example.com,Nina,40.00,1,abandoned,2026-12-01 09:00,
+C-117,oscar@example.com,Oscar,80.00,2,weird,2026-11-15 09:00,
+C-101,ana@example.com,Ana,249.99,3,abandoned,2026-11-17 10:00,2026-11-17 09:45
+C-118,pam@example.com,Pam,30.00,1,abandoned,2026-11-15 09:00,,extra-field
+,paul@example.com,Paul,30.00,1,abandoned,2026-11-15 09:00,
+C-119,not-an-email,Quinn,120.00,2,abandoned,2026-11-15 09:00,
+C-120,rachel@example.com,Rachel,55.00,1,abandoned,2026-11-14 09:00,2026-11-14 10:00
+`;
+var SAMPLE_CLEAN = `cart_id,customer_email,customer_name,cart_total,items,status,abandoned_at,checkout_started_at
+C-201,ana@example.com,Ana,45.00,1,abandoned,2026-11-17 09:00,
+C-202,ben@example.com,Ben,120.00,2,recovered,2026-11-15 09:00,
+C-203,cara@example.com,Cara,25.00,1,purchased,2026-11-14 09:00,
+`;
+var SAMPLE_WARNINGS = `cart_id,customer_email,customer_name,cart_total,items,status,abandoned_at,checkout_started_at
+C-301,ana@example.com,Ana,250.00,3,abandoned,2026-11-17 09:00,2026-11-17 08:30
+C-302,ben@example.com,Ben,40.00,1,abandoned,2026-10-10 09:00,
+`;
+var inputEl = document.getElementById("input");
+var outEl = document.getElementById("out");
+var lastReport = "";
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result || ""); };
+  reader.readAsText(f);
+});
+document.getElementById("sample").addEventListener("click", function () { inputEl.value = SAMPLE; });
+document.getElementById("sample-clean").addEventListener("click", function () { inputEl.value = SAMPLE_CLEAN; });
+document.getElementById("sample-warnings").addEventListener("click", function () { inputEl.value = SAMPLE_WARNINGS; });
+document.getElementById("run").addEventListener("click", function () {
+  var options = {
+    minValue: document.getElementById("opt-minvalue").value,
+    staleDays: document.getElementById("opt-stale").value,
+    asOf: document.getElementById("opt-asof").value
+  };
+  try {
+    lastReport = window.runTool(inputEl.value, options);
+    outEl.textContent = lastReport;
+  } catch (e) {
+    lastReport = "ERROR: " + e.message + "\n";
+    outEl.textContent = lastReport;
+  }
+});
+document.getElementById("download").addEventListener("click", function () {
+  var text = lastReport || outEl.textContent;
+  var blob = new Blob([text], { type: "text/plain" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "woo-abandoned-cart-report.txt";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
